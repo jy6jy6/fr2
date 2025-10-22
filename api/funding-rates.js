@@ -49,57 +49,81 @@ async function getFundingIntervalForSymbol(exchange, symbol) {
 }
 
 /**
- * Fetch funding rates from MEXC using individual symbol requests
+ * Fetch funding rates from MEXC using REST API
  * @param {Object} exchange - CCXT exchange instance
  * @returns {Promise<Array>} Array of funding rate data
  */
 async function fetchMexcFundingRates(exchange) {
   try {
-    console.log('Fetching MEXC funding rates using individual symbol method...');
+    console.log('Fetching MEXC funding rates using REST API...');
 
     // Load markets first
     await exchange.loadMarkets();
 
     const result = [];
-    const symbols = Object.keys(exchange.markets).filter(symbol =>
-      symbol.includes('/USDT') && exchange.markets[symbol].swap
-    );
 
-    console.log(`MEXC: Processing ${symbols.length} perpetual contracts...`);
+    // Try to get funding rates using MEXC's public API
+    try {
+      // Use MEXC's direct API endpoint for funding rates
+      const response = await fetch('https://contract.mexc.com/api/v1/contract/funding_rate');
+      const data = await response.json();
 
-    // Process symbols in smaller batches for MEXC
-    const batchSize = 5;
-    for (let i = 0; i < Math.min(symbols.length, 50); i += batchSize) { // Limit to first 50 for performance
-      const batch = symbols.slice(i, i + batchSize);
+      if (data.success && data.data) {
+        data.data.forEach(item => {
+          if (item.symbol && item.symbol.includes('USDT')) {
+            const baseSymbol = item.symbol.replace('_USDT', '').replace('USDT', '');
 
-      await Promise.all(batch.map(async (symbol) => {
+            result.push({
+              exchange: 'MEXC',
+              symbol: baseSymbol,
+              fullSymbol: `${baseSymbol}/USDT:USDT`,
+              fundingRate: item.fundingRate ? (parseFloat(item.fundingRate) * 100).toFixed(6) : null,
+              fundingTimestamp: item.nextSettleTime ? item.nextSettleTime - (8 * 60 * 60 * 1000) : null,
+              fundingDatetime: item.nextSettleTime ? new Date(item.nextSettleTime - (8 * 60 * 60 * 1000)).toISOString() : null,
+              nextFundingTime: item.nextSettleTime || null,
+              nextFundingDatetime: item.nextSettleTime ? new Date(item.nextSettleTime).toISOString() : null,
+              fundingIntervalHours: 8,
+              markPrice: null,
+              indexPrice: null
+            });
+          }
+        });
+      }
+    } catch (apiError) {
+      console.log('MEXC direct API failed, falling back to CCXT ticker method...');
+
+      // Fallback to ticker method with limited symbols
+      const symbols = Object.keys(exchange.markets).filter(symbol =>
+        symbol.includes('/USDT') && exchange.markets[symbol].swap
+      ).slice(0, 20); // Limit to 20 symbols for performance
+
+      console.log(`MEXC: Processing ${symbols.length} perpetual contracts via ticker...`);
+
+      for (const symbol of symbols) {
         try {
           const ticker = await exchange.fetchTicker(symbol);
           const baseSymbol = symbol.replace('/USDT', '');
-
-          // MEXC typically uses 8H intervals
-          const fundingIntervalHours = 8;
 
           result.push({
             exchange: 'MEXC',
             symbol: baseSymbol,
             fullSymbol: symbol,
-            fundingRate: null, // MEXC doesn't provide funding rate via ticker
+            fundingRate: null, // No funding rate in ticker
             fundingTimestamp: null,
             fundingDatetime: null,
             nextFundingTime: null,
             nextFundingDatetime: null,
-            fundingIntervalHours: fundingIntervalHours,
+            fundingIntervalHours: 8,
             markPrice: ticker.last,
             indexPrice: null
           });
+
+          // Small delay to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 100));
         } catch (error) {
           // Skip individual symbols that fail
         }
-      }));
-
-      // Delay between batches
-      await new Promise(resolve => setTimeout(resolve, 200));
+      }
     }
 
     console.log(`MEXC: Found ${result.length} perpetual contracts`);
@@ -127,10 +151,17 @@ async function fetchFundingRates(exchangeName, exchange) {
     }
 
     // Load markets first
+    console.log(`${exchangeName}: Loading markets...`);
     await exchange.loadMarkets();
 
     // Get funding rates for all perpetual contracts
+    console.log(`${exchangeName}: Fetching funding rates...`);
     const fundingRates = await exchange.fetchFundingRates();
+
+    if (!fundingRates || Object.keys(fundingRates).length === 0) {
+      console.log(`${exchangeName}: No funding rates returned from API`);
+      return [];
+    }
 
     const result = [];
 
@@ -141,67 +172,56 @@ async function fetchFundingRates(exchangeName, exchange) {
 
     console.log(`${exchangeName}: Processing ${symbols.length} perpetual contracts...`);
 
-    // Process symbols in batches to avoid rate limiting
-    const batchSize = 10;
+    // Process symbols in smaller batches to avoid timeout
+    const batchSize = 20;
     for (let i = 0; i < symbols.length; i += batchSize) {
       const batch = symbols.slice(i, i + batchSize);
 
-      await Promise.all(batch.map(async (symbol) => {
-        const data = fundingRates[symbol];
-        const baseSymbol = symbol.split(':')[0].replace('/USDT', '');
+      batch.forEach((symbol) => {
+        try {
+          const data = fundingRates[symbol];
+          if (!data) return;
 
-        // Calculate actual funding interval
-        let fundingIntervalHours = null;
+          const baseSymbol = symbol.split(':')[0].replace('/USDT', '');
 
-        // First try to calculate from current and next funding times
-        if (data.fundingTimestamp && data.nextFundingTime) {
-          fundingIntervalHours = calculateFundingInterval(data.fundingTimestamp, data.nextFundingTime);
-        }
+          // Calculate actual funding interval
+          let fundingIntervalHours = 8; // Default
 
-        // If that fails, try to get from funding history
-        if (!fundingIntervalHours) {
-          try {
-            fundingIntervalHours = await getFundingIntervalForSymbol(exchange, symbol);
-          } catch (error) {
-            // Silently continue if funding history fails
+          // Try to calculate from current and next funding times
+          if (data.fundingTimestamp && data.nextFundingTime) {
+            fundingIntervalHours = calculateFundingInterval(data.fundingTimestamp, data.nextFundingTime) || 8;
           }
-        }
 
-        // Fallback to common intervals based on exchange
-        if (!fundingIntervalHours) {
-          if (exchangeName === 'binance') {
-            fundingIntervalHours = 8; // Most Binance pairs are 8H
-          } else {
-            fundingIntervalHours = 8; // Default fallback
-          }
+          result.push({
+            exchange: exchangeName.toUpperCase(),
+            symbol: baseSymbol,
+            fullSymbol: symbol,
+            fundingRate: data.fundingRate ? (data.fundingRate * 100).toFixed(6) : null,
+            fundingTimestamp: data.fundingTimestamp,
+            fundingDatetime: data.fundingDatetime,
+            nextFundingTime: data.nextFundingTime || data.fundingTimestamp,
+            nextFundingDatetime: data.nextFundingDatetime || data.fundingDatetime,
+            fundingIntervalHours: fundingIntervalHours,
+            markPrice: data.markPrice,
+            indexPrice: data.indexPrice
+          });
+        } catch (error) {
+          console.log(`${exchangeName}: Error processing symbol ${symbol}:`, error.message);
         }
-
-        result.push({
-          exchange: exchangeName.toUpperCase(),
-          symbol: baseSymbol,
-          fullSymbol: symbol,
-          fundingRate: data.fundingRate ? (data.fundingRate * 100).toFixed(6) : null,
-          fundingTimestamp: data.fundingTimestamp,
-          fundingDatetime: data.fundingDatetime,
-          nextFundingTime: data.nextFundingTime,
-          nextFundingDatetime: data.nextFundingDatetime,
-          fundingIntervalHours: fundingIntervalHours,
-          markPrice: data.markPrice,
-          indexPrice: data.indexPrice
-        });
-      }));
+      });
 
       // Small delay between batches to respect rate limits
       if (i + batchSize < symbols.length) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
     }
 
-    console.log(`${exchangeName}: Found ${result.length} perpetual contracts`);
+    console.log(`${exchangeName}: Successfully processed ${result.length} perpetual contracts`);
     return result;
 
   } catch (error) {
     console.error(`Error fetching from ${exchangeName}:`, error.message);
+    console.error(`${exchangeName} error stack:`, error.stack);
     return [];
   }
 }
@@ -229,11 +249,28 @@ async function handler(req, res) {
     const startTime = Date.now();
     console.log('Starting funding rates fetch...');
 
-    // Fetch from both exchanges in parallel
-    const [binanceRates, mexcRates] = await Promise.all([
-      fetchFundingRates('binance', exchanges.binance),
-      fetchFundingRates('mexc', exchanges.mexc)
-    ]);
+    // Fetch from both exchanges in parallel with timeout
+    const fetchPromises = [
+      Promise.race([
+        fetchFundingRates('binance', exchanges.binance),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Binance timeout')), 25000))
+      ]).catch(error => {
+        console.error('Binance fetch failed:', error.message);
+        return [];
+      }),
+      Promise.race([
+        fetchFundingRates('mexc', exchanges.mexc),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('MEXC timeout')), 25000))
+      ]).catch(error => {
+        console.error('MEXC fetch failed:', error.message);
+        return [];
+      })
+    ];
+
+    const [binanceRates, mexcRates] = await Promise.all(fetchPromises);
+
+    console.log(`Binance returned ${binanceRates.length} rates`);
+    console.log(`MEXC returned ${mexcRates.length} rates`);
 
     // Create lookup maps for easier comparison
     const binanceMap = {};
@@ -255,8 +292,8 @@ async function handler(req, res) {
       const binanceData = binanceMap[symbol];
       const mexcData = mexcMap[symbol];
 
-      // Only include if symbol exists on both exchanges and has funding rates
-      if (binanceData && mexcData && binanceData.fundingRate !== null) {
+      // Only include if symbol exists on both exchanges
+      if (binanceData && mexcData && (binanceData.fundingRate !== null || mexcData.fundingRate !== null)) {
         const binanceRate = parseFloat(binanceData.fundingRate) || 0;
         const mexcRate = parseFloat(mexcData.fundingRate) || 0;
         const difference = mexcRate - binanceRate; // MEXC - Binance
