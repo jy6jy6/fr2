@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Funding Rate Comparison - MEXC vs Binance</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f8fafc;
+            color: #334155;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #1e293b;
+            margin-bottom: 10px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #059669;
+        }
+        .stat-label {
+            color: #64748b;
+            margin-top: 5px;
+        }
+        .loading {
+            text-align: center;
+            padding: 50px;
+            font-size: 18px;
+            color: #64748b;
+        }
+        .error {
+            background: #fee2e2;
+            color: #dc2626;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .table-container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        th {
+            background: #f1f5f9;
+            font-weight: 600;
+            color: #475569;
+            position: sticky;
+            top: 0;
+        }
+        .symbol {
+            font-weight: bold;
+            color: #1e293b;
+        }
+        .funding-rate {
+            font-family: monospace;
+        }
+        .positive { color: #dc2626; }
+        .negative { color: #059669; }
+        .neutral { color: #64748b; }
+        .difference-high { background: #fee2e2; }
+        .difference-medium { background: #fef3c7; }
+        .difference-low { background: #f0fdf4; }
+        .exchange-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: bold;
+        }
+        .binance { background: #fbbf24; color: white; }
+        .mexc { background: #3b82f6; color: white; }
+        .equal { background: #64748b; color: white; }
+        .refresh-btn {
+            background: #059669;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-bottom: 20px;
+        }
+        .refresh-btn:hover {
+            background: #047857;
+        }
+        .last-updated {
+            text-align: center;
+            color: #64748b;
+            margin-top: 20px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Funding Rate Comparison</h1>
+            <p>Real-time funding rate differences between MEXC and Binance futures</p>
+            <button class="refresh-btn" onclick="loadData()">🔄 Refresh Data</button>
+        </div>
+
+        <div id="stats" class="stats" style="display: none;"></div>
+        <div id="loading" class="loading">Loading funding rates...</div>
+        <div id="error" class="error" style="display: none;"></div>
+
+        <div id="table-container" class="table-container" style="display: none;">
+            <table id="funding-table">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Binance Rate (%)</th>
+                        <th>MEXC Rate (%)</th>
+                        <th>Difference (%)</th>
+                        <th>Better Exchange</th>
+                        <th>Category</th>
+                        <th>Binance Interval</th>
+                        <th>MEXC Interval</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body">
+                </tbody>
+            </table>
+        </div>
+
+        <div id="last-updated" class="last-updated"></div>
+    </div>
+
+    <script>
+        async function loadData() {
+            const loading = document.getElementById('loading');
+            const error = document.getElementById('error');
+            const stats = document.getElementById('stats');
+            const tableContainer = document.getElementById('table-container');
+            const lastUpdated = document.getElementById('last-updated');
+
+            loading.style.display = 'block';
+            error.style.display = 'none';
+            stats.style.display = 'none';
+            tableContainer.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/funding-rates');
+                const data = await response.json();
+
+                if (!data.success) {
+                    throw new Error(data.message || 'API request failed');
+                }
+
+                // Update stats
+                stats.innerHTML = `
+                    <div class="stat-card">
+                        <div class="stat-value">${data.summary.commonCoins}</div>
+                        <div class="stat-label">Common Coins</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${data.summary.differenceStats.favorsBinance}</div>
+                        <div class="stat-label">Favors Binance</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${data.summary.differenceStats.favorsMexc}</div>
+                        <div class="stat-label">Favors MEXC</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${data.summary.differenceStats.highDifferences}</div>
+                        <div class="stat-label">High Differences</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${data.fetchDuration}</div>
+                        <div class="stat-label">Fetch Duration</div>
+                    </div>
+                `;
+
+                // Update table
+                const tableBody = document.getElementById('table-body');
+                tableBody.innerHTML = '';
+
+                data.tableData.forEach(row => {
+                    const tr = document.createElement('tr');
+                    tr.className = `difference-${row.differenceCategory.toLowerCase()}`;
+
+                    const diff = parseFloat(row.fundingRateDifference);
+                    const diffClass = diff > 0 ? 'positive' : diff < 0 ? 'negative' : 'neutral';
+
+                    tr.innerHTML = `
+                        <td class="symbol">${row.symbol}</td>
+                        <td class="funding-rate">${row.binance.fundingRate || 'N/A'}</td>
+                        <td class="funding-rate">${row.mexc.fundingRate || 'N/A'}</td>
+                        <td class="funding-rate ${diffClass}">${row.fundingRateDifference}</td>
+                        <td><span class="exchange-badge ${row.favorableExchange.toLowerCase()}">${row.favorableExchange}</span></td>
+                        <td>${row.differenceCategory}</td>
+                        <td>${row.binance.fundingIntervalHours}H</td>
+                        <td>${row.mexc.fundingIntervalHours}H</td>
+                    `;
+
+                    tableBody.appendChild(tr);
+                });
+
+                loading.style.display = 'none';
+                stats.style.display = 'grid';
+                tableContainer.style.display = 'block';
+
+                lastUpdated.textContent = `Last updated: ${new Date(data.timestamp).toLocaleString()}`;
+
+            } catch (err) {
+                loading.style.display = 'none';
+                error.style.display = 'block';
+                error.textContent = `Error: ${err.message}`;
+            }
+        }
+
+        // Load data on page load
+        loadData();
+
+        // Auto-refresh every 5 minutes
+        setInterval(loadData, 5 * 60 * 1000);
+    </script>
+</body>
+</html>
