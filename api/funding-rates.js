@@ -192,35 +192,63 @@ async function fetchBinanceFundingRates(exchange) {
         // Extract base symbol
         const baseSymbol = symbol.split(':')[0].replace('/USDT', '');
 
-        // Calculate actual funding interval from timestamps
-        let fundingIntervalHours = 8; // Default
+        // Calculate actual funding interval with improved logic
+        let fundingIntervalHours = null; // Start with null to force calculation
 
-        // Try to calculate from the timestamp difference first
+        // Method 1: Try to calculate from the timestamp difference first
         if (data.fundingTimestamp && data.nextFundingTime) {
           const interval = calculateFundingInterval(data.fundingTimestamp, data.nextFundingTime);
           if (interval && interval > 0 && interval <= 24) {
             fundingIntervalHours = interval;
           }
-        } else if (data.fundingDatetime && data.nextFundingDatetime) {
-          // Try with datetime strings
+        }
+
+        // Method 2: Try with datetime strings if timestamps failed
+        if (!fundingIntervalHours && data.fundingDatetime && data.nextFundingDatetime) {
           const currentTime = new Date(data.fundingDatetime).getTime();
           const nextTime = new Date(data.nextFundingDatetime).getTime();
           const interval = calculateFundingInterval(currentTime, nextTime);
           if (interval && interval > 0 && interval <= 24) {
             fundingIntervalHours = interval;
           }
-        } else {
-          // If no timestamp data, try to fetch funding history for this specific symbol
-          // Only for first 20 symbols to avoid timeout
-          if (processedCount < 20) {
-            try {
-              const historyInterval = await getFundingIntervalForSymbol(exchange, symbol);
-              if (historyInterval && historyInterval > 0 && historyInterval <= 24) {
-                fundingIntervalHours = historyInterval;
-              }
-            } catch (historyError) {
-              // Use default if history fails
+        }
+
+        // Method 3: Try funding history for very few symbols to avoid timeout
+        if (!fundingIntervalHours && processedCount < 5) {
+          try {
+            const historyInterval = await getFundingIntervalForSymbol(exchange, symbol);
+            if (historyInterval && historyInterval > 0 && historyInterval <= 24) {
+              fundingIntervalHours = historyInterval;
             }
+          } catch (historyError) {
+            // Continue to smart fallback
+          }
+        }
+
+        // Method 4: Smart fallback based on Binance patterns
+        if (!fundingIntervalHours) {
+          // Major established coins (typically 8H)
+          const major8HCoins = [
+            'BTC', 'ETH', 'BNB', 'XRP', 'ADA', 'SOL', 'DOT', 'DOGE', 'AVAX', 'SHIB',
+            'MATIC', 'LTC', 'UNI', 'LINK', 'TRX', 'BCH', 'NEAR', 'ATOM', 'XLM', 'HBAR',
+            'VET', 'FIL', 'ETC', 'THETA', 'ICP', 'MANA', 'SAND', 'AXS', 'ALGO', 'EGLD',
+            'XTZ', 'AAVE', 'GRT', 'KLAY', 'FLOW', 'FTM', 'LRC', 'CRV', 'SNX', 'COMP'
+          ];
+
+          // Coins with "1000" prefix (usually 8H on Binance)
+          const is1000Coin = baseSymbol.startsWith('1000');
+
+          // Very new or small market cap coins (often 4H or 1H)
+          const isNewCoin = symbol.includes('-') || baseSymbol.length > 6;
+
+          if (major8HCoins.includes(baseSymbol) || is1000Coin) {
+            fundingIntervalHours = 8;
+          } else if (isNewCoin || baseSymbol.length > 5) {
+            // Newer/smaller coins more likely to be 4H
+            fundingIntervalHours = 4;
+          } else {
+            // Default assumption: most altcoins are 4H now
+            fundingIntervalHours = 4;
           }
         }
 
@@ -250,11 +278,15 @@ async function fetchBinanceFundingRates(exchange) {
 
     // Log interval distribution
     const intervalCounts = {};
+
     result.forEach(item => {
       const interval = `${item.fundingIntervalHours}H`;
       intervalCounts[interval] = (intervalCounts[interval] || 0) + 1;
     });
+
     console.log(`Binance intervals:`, intervalCounts);
+    console.log(`Sample 4H coins:`, result.filter(r => r.fundingIntervalHours === 4).slice(0, 10).map(r => r.symbol));
+    console.log(`Sample 8H coins:`, result.filter(r => r.fundingIntervalHours === 8).slice(0, 10).map(r => r.symbol));
 
     console.log(`Binance: Successfully processed ${processedCount}/${symbols.length} contracts`);
     return result;
