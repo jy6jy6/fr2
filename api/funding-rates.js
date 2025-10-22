@@ -167,7 +167,7 @@ async function fetchFundingRates(exchangeName, exchange) {
 
     // Process each symbol to get actual funding intervals
     const symbols = Object.keys(fundingRates).filter(symbol =>
-      symbol.includes(':') && symbol.includes('USDT')
+      symbol.includes('USDT') && (symbol.includes(':') || symbol.includes('/'))
     );
 
     console.log(`${exchangeName}: Processing ${symbols.length} perpetual contracts...`);
@@ -182,7 +182,17 @@ async function fetchFundingRates(exchangeName, exchange) {
           const data = fundingRates[symbol];
           if (!data) return;
 
-          const baseSymbol = symbol.split(':')[0].replace('/USDT', '');
+          // Extract base symbol more robustly
+          let baseSymbol = symbol;
+          if (symbol.includes(':')) {
+            baseSymbol = symbol.split(':')[0];
+          }
+          if (symbol.includes('/USDT')) {
+            baseSymbol = baseSymbol.replace('/USDT', '');
+          }
+          if (symbol.includes('USDT')) {
+            baseSymbol = baseSymbol.replace('USDT', '');
+          }
 
           // Calculate actual funding interval
           let fundingIntervalHours = 8; // Default
@@ -256,6 +266,7 @@ async function handler(req, res) {
         new Promise((_, reject) => setTimeout(() => reject(new Error('Binance timeout')), 25000))
       ]).catch(error => {
         console.error('Binance fetch failed:', error.message);
+        console.error('Binance error stack:', error.stack);
         return [];
       }),
       Promise.race([
@@ -339,6 +350,57 @@ async function handler(req, res) {
       intervalStats[interval] = (intervalStats[interval] || 0) + 1;
     });
 
+    // If no common coins, create individual table data
+    let finalTableData = comparisonTable;
+    if (comparisonTable.length === 0) {
+      console.log('No common coins found, showing individual exchange data...');
+
+      // Show top rates from each exchange
+      const topBinance = binanceRates.slice(0, 10);
+      const topMexc = mexcRates.slice(0, 10);
+
+      finalTableData = [
+        ...topBinance.map(item => ({
+          symbol: item.symbol,
+          binance: {
+            fundingRate: item.fundingRate,
+            fundingIntervalHours: item.fundingIntervalHours,
+            nextFundingDatetime: item.nextFundingDatetime,
+            markPrice: item.markPrice
+          },
+          mexc: {
+            fundingRate: 'N/A',
+            fundingIntervalHours: 'N/A',
+            nextFundingDatetime: 'N/A',
+            markPrice: 'N/A'
+          },
+          fundingRateDifference: 'N/A',
+          absoluteDifference: 'N/A',
+          favorableExchange: 'BINANCE_ONLY',
+          differenceCategory: 'N/A'
+        })),
+        ...topMexc.map(item => ({
+          symbol: item.symbol,
+          binance: {
+            fundingRate: 'N/A',
+            fundingIntervalHours: 'N/A',
+            nextFundingDatetime: 'N/A',
+            markPrice: 'N/A'
+          },
+          mexc: {
+            fundingRate: item.fundingRate,
+            fundingIntervalHours: item.fundingIntervalHours,
+            nextFundingDatetime: item.nextFundingDatetime,
+            markPrice: item.markPrice
+          },
+          fundingRateDifference: 'N/A',
+          absoluteDifference: 'N/A',
+          favorableExchange: 'MEXC_ONLY',
+          differenceCategory: 'N/A'
+        }))
+      ];
+    }
+
     // Enhanced response with table format
     const response = {
       success: true,
@@ -360,7 +422,7 @@ async function handler(req, res) {
           favorsMexc: comparisonTable.filter(item => item.favorableExchange === 'MEXC').length
         }
       },
-      tableData: comparisonTable,
+      tableData: finalTableData,
       rawData: {
         binance: binanceRates,
         mexc: mexcRates
