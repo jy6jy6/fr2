@@ -194,20 +194,33 @@ async function fetchBinanceFundingRates(exchange) {
 
         // Calculate actual funding interval from timestamps
         let fundingIntervalHours = 8; // Default
+
+        // Try to calculate from the timestamp difference first
         if (data.fundingTimestamp && data.nextFundingTime) {
           const interval = calculateFundingInterval(data.fundingTimestamp, data.nextFundingTime);
           if (interval && interval > 0 && interval <= 24) {
             fundingIntervalHours = interval;
           }
-        }
-
-        // Manual override for known different intervals on Binance
-        if (baseSymbol && typeof baseSymbol === 'string') {
-          // Some Binance pairs have different intervals - check symbol patterns
-          if (baseSymbol.length <= 3 || ['BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'DOGE', 'MATIC', 'DOT', 'LINK', 'UNI'].includes(baseSymbol)) {
-            fundingIntervalHours = 8; // Major pairs typically 8H
-          } else if (baseSymbol.includes('1000') || baseSymbol.length > 6) {
-            fundingIntervalHours = 4; // Some newer/smaller pairs may be 4H
+        } else if (data.fundingDatetime && data.nextFundingDatetime) {
+          // Try with datetime strings
+          const currentTime = new Date(data.fundingDatetime).getTime();
+          const nextTime = new Date(data.nextFundingDatetime).getTime();
+          const interval = calculateFundingInterval(currentTime, nextTime);
+          if (interval && interval > 0 && interval <= 24) {
+            fundingIntervalHours = interval;
+          }
+        } else {
+          // If no timestamp data, try to fetch funding history for this specific symbol
+          // Only for first 20 symbols to avoid timeout
+          if (processedCount < 20) {
+            try {
+              const historyInterval = await getFundingIntervalForSymbol(exchange, symbol);
+              if (historyInterval && historyInterval > 0 && historyInterval <= 24) {
+                fundingIntervalHours = historyInterval;
+              }
+            } catch (historyError) {
+              // Use default if history fails
+            }
           }
         }
 
@@ -234,6 +247,14 @@ async function fetchBinanceFundingRates(exchange) {
 
     // Sort results by symbol name for consistency
     result.sort((a, b) => a.symbol.localeCompare(b.symbol));
+
+    // Log interval distribution
+    const intervalCounts = {};
+    result.forEach(item => {
+      const interval = `${item.fundingIntervalHours}H`;
+      intervalCounts[interval] = (intervalCounts[interval] || 0) + 1;
+    });
+    console.log(`Binance intervals:`, intervalCounts);
 
     console.log(`Binance: Successfully processed ${processedCount}/${symbols.length} contracts`);
     return result;
