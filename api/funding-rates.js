@@ -71,7 +71,8 @@ async function fetchMexcFundingRates(exchange) {
       if (data.success && data.data) {
         data.data.forEach(item => {
           if (item.symbol && item.symbol.includes('USDT')) {
-            const baseSymbol = item.symbol.replace('_USDT', '').replace('USDT', '');
+            // Clean up symbol name to match Binance format
+            let baseSymbol = item.symbol.replace('_USDT', '').replace('USDT', '').toUpperCase();
 
             result.push({
               exchange: 'MEXC',
@@ -150,11 +151,10 @@ async function fetchFundingRates(exchangeName, exchange) {
       return await fetchMexcFundingRates(exchange);
     }
 
-    // Load markets first
+    // For Binance - simplified approach
     console.log(`${exchangeName}: Loading markets...`);
     await exchange.loadMarkets();
 
-    // Get funding rates for all perpetual contracts
     console.log(`${exchangeName}: Fetching funding rates...`);
     const fundingRates = await exchange.fetchFundingRates();
 
@@ -163,70 +163,55 @@ async function fetchFundingRates(exchangeName, exchange) {
       return [];
     }
 
+    console.log(`${exchangeName}: Received ${Object.keys(fundingRates).length} funding rates`);
+
     const result = [];
 
-    // Process each symbol to get actual funding intervals
+    // Filter for USDT perpetuals
     const symbols = Object.keys(fundingRates).filter(symbol =>
-      symbol.includes('USDT') && (symbol.includes(':') || symbol.includes('/'))
+      symbol.includes('USDT') && symbol.includes(':')
     );
 
-    console.log(`${exchangeName}: Processing ${symbols.length} perpetual contracts...`);
+    console.log(`${exchangeName}: Found ${symbols.length} USDT perpetual symbols`);
 
-    // Process symbols in smaller batches to avoid timeout
-    const batchSize = 20;
-    for (let i = 0; i < symbols.length; i += batchSize) {
-      const batch = symbols.slice(i, i + batchSize);
+    // Process symbols directly without batching to avoid timeout issues
+    let processed = 0;
+    for (const symbol of symbols) {
+      try {
+        const data = fundingRates[symbol];
+        if (!data) continue;
 
-      batch.forEach((symbol) => {
-        try {
-          const data = fundingRates[symbol];
-          if (!data) return;
+        // Simple symbol extraction
+        let baseSymbol = symbol.split(':')[0].replace('/USDT', '');
 
-          // Extract base symbol more robustly
-          let baseSymbol = symbol;
-          if (symbol.includes(':')) {
-            baseSymbol = symbol.split(':')[0];
-          }
-          if (symbol.includes('/USDT')) {
-            baseSymbol = baseSymbol.replace('/USDT', '');
-          }
-          if (symbol.includes('USDT')) {
-            baseSymbol = baseSymbol.replace('USDT', '');
-          }
+        // Skip if no funding rate data
+        if (data.fundingRate === undefined && data.fundingTimestamp === undefined) continue;
 
-          // Calculate actual funding interval
-          let fundingIntervalHours = 8; // Default
+        result.push({
+          exchange: exchangeName.toUpperCase(),
+          symbol: baseSymbol,
+          fullSymbol: symbol,
+          fundingRate: data.fundingRate ? (data.fundingRate * 100).toFixed(6) : '0.000000',
+          fundingTimestamp: data.fundingTimestamp,
+          fundingDatetime: data.fundingDatetime,
+          nextFundingTime: data.nextFundingTime || data.fundingTimestamp,
+          nextFundingDatetime: data.nextFundingDatetime || data.fundingDatetime,
+          fundingIntervalHours: 8, // Default to 8H for now
+          markPrice: data.markPrice,
+          indexPrice: data.indexPrice
+        });
 
-          // Try to calculate from current and next funding times
-          if (data.fundingTimestamp && data.nextFundingTime) {
-            fundingIntervalHours = calculateFundingInterval(data.fundingTimestamp, data.nextFundingTime) || 8;
-          }
+        processed++;
 
-          result.push({
-            exchange: exchangeName.toUpperCase(),
-            symbol: baseSymbol,
-            fullSymbol: symbol,
-            fundingRate: data.fundingRate ? (data.fundingRate * 100).toFixed(6) : null,
-            fundingTimestamp: data.fundingTimestamp,
-            fundingDatetime: data.fundingDatetime,
-            nextFundingTime: data.nextFundingTime || data.fundingTimestamp,
-            nextFundingDatetime: data.nextFundingDatetime || data.fundingDatetime,
-            fundingIntervalHours: fundingIntervalHours,
-            markPrice: data.markPrice,
-            indexPrice: data.indexPrice
-          });
-        } catch (error) {
-          console.log(`${exchangeName}: Error processing symbol ${symbol}:`, error.message);
-        }
-      });
+        // Stop at reasonable number to avoid timeout
+        if (processed >= 100) break;
 
-      // Small delay between batches to respect rate limits
-      if (i + batchSize < symbols.length) {
-        await new Promise(resolve => setTimeout(resolve, 50));
+      } catch (error) {
+        console.log(`${exchangeName}: Error processing ${symbol}:`, error.message);
       }
     }
 
-    console.log(`${exchangeName}: Successfully processed ${result.length} perpetual contracts`);
+    console.log(`${exchangeName}: Successfully processed ${result.length} contracts`);
     return result;
 
   } catch (error) {
