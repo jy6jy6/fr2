@@ -26,24 +26,49 @@ function calculateFundingInterval(currentTime, nextTime) {
 }
 
 /**
- * Get actual funding rate interval for a specific market
+ * Get actual funding rate interval for a specific market using funding history
  * @param {Object} exchange - CCXT exchange instance
  * @param {string} symbol - Trading symbol
  * @returns {Promise<number>} Funding rate interval in hours
  */
 async function getFundingIntervalForSymbol(exchange, symbol) {
   try {
-    // Try to get funding rate history for this specific symbol
-    const fundingHistory = await exchange.fetchFundingRateHistory(symbol, undefined, 2);
+    // Get more funding rate history to be more accurate (last 3-5 records)
+    const fundingHistory = await exchange.fetchFundingRateHistory(symbol, undefined, 5);
     if (fundingHistory && fundingHistory.length >= 2) {
-      const interval = calculateFundingInterval(
-        fundingHistory[0].timestamp,
-        fundingHistory[1].timestamp
-      );
-      return interval;
+      // Calculate intervals between consecutive funding rates
+      const intervals = [];
+      for (let i = 0; i < fundingHistory.length - 1; i++) {
+        const interval = calculateFundingInterval(
+          fundingHistory[i + 1].timestamp, // Earlier timestamp
+          fundingHistory[i].timestamp     // Later timestamp
+        );
+        if (interval && interval > 0 && interval <= 24) {
+          intervals.push(interval);
+        }
+      }
+
+      // Return the most common interval (mode)
+      if (intervals.length > 0) {
+        const intervalCounts = {};
+        intervals.forEach(interval => {
+          intervalCounts[interval] = (intervalCounts[interval] || 0) + 1;
+        });
+
+        // Find the most frequent interval
+        let mostCommon = intervals[0];
+        let maxCount = 0;
+        for (const [interval, count] of Object.entries(intervalCounts)) {
+          if (count > maxCount) {
+            maxCount = count;
+            mostCommon = parseInt(interval);
+          }
+        }
+        return mostCommon;
+      }
     }
   } catch (error) {
-    // If funding history fails, try to get it from current funding data
+    // Silently continue to other methods
   }
   return null;
 }
@@ -184,6 +209,9 @@ async function fetchBinanceFundingRates(exchange) {
 
     // Process ALL symbols to ensure consistent results
     let processedCount = 0;
+    let historyCallsCount = 0;
+    const maxHistoryCalls = 100; // Limit history calls to avoid timeout
+
     for (const symbol of symbols) {
       try {
         const data = fundingRates[symbol];
@@ -192,7 +220,7 @@ async function fetchBinanceFundingRates(exchange) {
         // Extract base symbol
         const baseSymbol = symbol.split(':')[0].replace('/USDT', '');
 
-        // Calculate actual funding interval with improved logic
+        // Calculate actual funding interval with improved logic prioritizing API data
         let fundingIntervalHours = null; // Start with null to force calculation
 
         // Method 1: Try to calculate from the timestamp difference first
@@ -200,6 +228,7 @@ async function fetchBinanceFundingRates(exchange) {
           const interval = calculateFundingInterval(data.fundingTimestamp, data.nextFundingTime);
           if (interval && interval > 0 && interval <= 24) {
             fundingIntervalHours = interval;
+            console.log(`${baseSymbol}: Detected ${interval}H from timestamps`);
           }
         }
 
@@ -210,61 +239,33 @@ async function fetchBinanceFundingRates(exchange) {
           const interval = calculateFundingInterval(currentTime, nextTime);
           if (interval && interval > 0 && interval <= 24) {
             fundingIntervalHours = interval;
+            console.log(`${baseSymbol}: Detected ${interval}H from datetime strings`);
           }
         }
 
-        // Method 3: Try funding history for more symbols to catch 1H/2H
-        if (!fundingIntervalHours && processedCount < 50) {
+        // Method 3: Try funding history for symbols that don't have interval yet (with limit)
+        if (!fundingIntervalHours && historyCallsCount < maxHistoryCalls) {
           try {
             const historyInterval = await getFundingIntervalForSymbol(exchange, symbol);
+            historyCallsCount++; // Increment counter
+
             if (historyInterval && historyInterval > 0 && historyInterval <= 24) {
               fundingIntervalHours = historyInterval;
+              console.log(`${baseSymbol}: Detected ${historyInterval}H from funding history (call ${historyCallsCount}/${maxHistoryCalls})`);
             }
           } catch (historyError) {
-            // Continue to smart fallback
+            historyCallsCount++; // Still count failed calls
+            // Continue to fallback
           }
+
+          // Add small delay to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 30));
         }
 
-        // Method 4: Smart fallback based on Binance patterns
+        // Method 4: Final fallback - use 8H as default (most conservative)
         if (!fundingIntervalHours) {
-          // Major established coins (typically 8H)
-          const major8HCoins = [
-            'BTC', 'ETH', 'BNB', 'XRP', 'ADA', 'SOL', 'DOT', 'DOGE', 'AVAX', 'SHIB',
-            'MATIC', 'LTC', 'UNI', 'LINK', 'TRX', 'BCH', 'NEAR', 'ATOM', 'XLM', 'HBAR',
-            'VET', 'FIL', 'ETC', 'THETA', 'ICP', 'MANA', 'SAND', 'AXS', 'ALGO', 'EGLD',
-            'XTZ', 'AAVE', 'GRT', 'KLAY', 'FLOW', 'FTM', 'LRC', 'CRV', 'SNX', 'COMP'
-          ];
-
-          // Coins that typically have 1H intervals (very high volatility/new listings)
-          const likely1HCoins = [
-            'FDUSD', 'TUSD', 'NEIRO', 'DOGS', 'HMSTR', 'CATI', 'EIGEN', 'SCR', 'LUMIA',
-            'MEMEFI', 'VANA', 'VELODROME', 'MOVE', 'ME', 'USUAL', 'PENGU', 'HYPERLIQUID',
-            'ZBT', 'DOOD', 'MELANIA', 'TRUMP', 'PNUT', 'ACT', 'GOAT'
-          ];
-
-          // Coins with "1000" prefix (usually 8H on Binance)
-          const is1000Coin = baseSymbol.startsWith('1000');
-
-          // Very new or small market cap coins
-          const isNewCoin = symbol.includes('-') || baseSymbol.length > 6;
-
-          // Meme coins or very volatile coins (often 1H or 2H)
-          const isMemeOrVolatile = baseSymbol.includes('DOGE') || baseSymbol.includes('SHIB') ||
-                                   baseSymbol.includes('MEME') || baseSymbol.includes('PEPE') ||
-                                   baseSymbol.includes('FLOKI') || baseSymbol.includes('BONK');
-
-          if (likely1HCoins.includes(baseSymbol) || isMemeOrVolatile) {
-            fundingIntervalHours = 1; // High volatility = shorter intervals
-          } else if (major8HCoins.includes(baseSymbol) || is1000Coin) {
-            fundingIntervalHours = 8;
-          } else if (isNewCoin || baseSymbol.length > 5) {
-            // Newer/smaller coins more likely to be 4H or 2H
-            // Use symbol length for deterministic 2H vs 4H choice
-            fundingIntervalHours = baseSymbol.length >= 7 ? 2 : 4; // Longer names = 2H, shorter = 4H
-          } else {
-            // Default assumption: most altcoins are 4H now
-            fundingIntervalHours = 4;
-          }
+          fundingIntervalHours = 8; // Default to 8H if we can't detect
+          console.log(`${baseSymbol}: Using fallback 8H interval`);
         }
 
         result.push({
@@ -300,10 +301,15 @@ async function fetchBinanceFundingRates(exchange) {
     });
 
     console.log(`Binance intervals:`, intervalCounts);
-    console.log(`1H coins:`, result.filter(r => r.fundingIntervalHours === 1).map(r => r.symbol));
-    console.log(`2H coins:`, result.filter(r => r.fundingIntervalHours === 2).slice(0, 10).map(r => r.symbol));
-    console.log(`Sample 4H coins:`, result.filter(r => r.fundingIntervalHours === 4).slice(0, 10).map(r => r.symbol));
-    console.log(`Sample 8H coins:`, result.filter(r => r.fundingIntervalHours === 8).slice(0, 10).map(r => r.symbol));
+    console.log(`Total funding history API calls made: ${historyCallsCount}/${maxHistoryCalls}`);
+    console.log(`1H coins (${result.filter(r => r.fundingIntervalHours === 1).length}):`,
+      result.filter(r => r.fundingIntervalHours === 1).map(r => r.symbol));
+    console.log(`2H coins (${result.filter(r => r.fundingIntervalHours === 2).length}):`,
+      result.filter(r => r.fundingIntervalHours === 2).slice(0, 15).map(r => r.symbol));
+    console.log(`4H coins (${result.filter(r => r.fundingIntervalHours === 4).length}):`,
+      result.filter(r => r.fundingIntervalHours === 4).slice(0, 10).map(r => r.symbol));
+    console.log(`8H coins (${result.filter(r => r.fundingIntervalHours === 8).length}):`,
+      result.filter(r => r.fundingIntervalHours === 8).slice(0, 10).map(r => r.symbol));
 
     console.log(`Binance: Successfully processed ${processedCount}/${symbols.length} contracts`);
     return result;
