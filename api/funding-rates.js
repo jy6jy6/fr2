@@ -213,8 +213,8 @@ async function fetchBinanceFundingRates(exchange) {
           }
         }
 
-        // Method 3: Try funding history for very few symbols to avoid timeout
-        if (!fundingIntervalHours && processedCount < 5) {
+        // Method 3: Try funding history for more symbols to catch 1H/2H
+        if (!fundingIntervalHours && processedCount < 50) {
           try {
             const historyInterval = await getFundingIntervalForSymbol(exchange, symbol);
             if (historyInterval && historyInterval > 0 && historyInterval <= 24) {
@@ -235,17 +235,32 @@ async function fetchBinanceFundingRates(exchange) {
             'XTZ', 'AAVE', 'GRT', 'KLAY', 'FLOW', 'FTM', 'LRC', 'CRV', 'SNX', 'COMP'
           ];
 
+          // Coins that typically have 1H intervals (very high volatility/new listings)
+          const likely1HCoins = [
+            'FDUSD', 'TUSD', 'NEIRO', 'DOGS', 'HMSTR', 'CATI', 'EIGEN', 'SCR', 'LUMIA',
+            'MEMEFI', 'VANA', 'VELODROME', 'MOVE', 'ME', 'USUAL', 'PENGU', 'HYPERLIQUID',
+            'ZBT', 'DOOD', 'MELANIA', 'TRUMP', 'PNUT', 'ACT', 'GOAT'
+          ];
+
           // Coins with "1000" prefix (usually 8H on Binance)
           const is1000Coin = baseSymbol.startsWith('1000');
 
-          // Very new or small market cap coins (often 4H or 1H)
+          // Very new or small market cap coins
           const isNewCoin = symbol.includes('-') || baseSymbol.length > 6;
 
-          if (major8HCoins.includes(baseSymbol) || is1000Coin) {
+          // Meme coins or very volatile coins (often 1H or 2H)
+          const isMemeOrVolatile = baseSymbol.includes('DOGE') || baseSymbol.includes('SHIB') ||
+                                   baseSymbol.includes('MEME') || baseSymbol.includes('PEPE') ||
+                                   baseSymbol.includes('FLOKI') || baseSymbol.includes('BONK');
+
+          if (likely1HCoins.includes(baseSymbol) || isMemeOrVolatile) {
+            fundingIntervalHours = 1; // High volatility = shorter intervals
+          } else if (major8HCoins.includes(baseSymbol) || is1000Coin) {
             fundingIntervalHours = 8;
           } else if (isNewCoin || baseSymbol.length > 5) {
-            // Newer/smaller coins more likely to be 4H
-            fundingIntervalHours = 4;
+            // Newer/smaller coins more likely to be 4H or 2H
+            // Use symbol length for deterministic 2H vs 4H choice
+            fundingIntervalHours = baseSymbol.length >= 7 ? 2 : 4; // Longer names = 2H, shorter = 4H
           } else {
             // Default assumption: most altcoins are 4H now
             fundingIntervalHours = 4;
@@ -285,6 +300,8 @@ async function fetchBinanceFundingRates(exchange) {
     });
 
     console.log(`Binance intervals:`, intervalCounts);
+    console.log(`1H coins:`, result.filter(r => r.fundingIntervalHours === 1).map(r => r.symbol));
+    console.log(`2H coins:`, result.filter(r => r.fundingIntervalHours === 2).slice(0, 10).map(r => r.symbol));
     console.log(`Sample 4H coins:`, result.filter(r => r.fundingIntervalHours === 4).slice(0, 10).map(r => r.symbol));
     console.log(`Sample 8H coins:`, result.filter(r => r.fundingIntervalHours === 8).slice(0, 10).map(r => r.symbol));
 
