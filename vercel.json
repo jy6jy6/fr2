@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "functions": {
+    "api/funding-rates.js": {
+      "maxDuration": 30
+    }
+  },
+  "routes": [
+    {
+      "src": "/api/funding-rates",
+      "dest": "/api/funding-rates.js"
+    },
+    {
+      "src": "/",
+      "dest": "/api/funding-rates.js"
+    }
+  ]
+}

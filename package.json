@@ -1,0 +1,27 @@
+{
+  "name": "funding-rate-fetcher",
+  "version": "1.0.0",
+  "description": "Real-time funding rate fetcher for MEXC and Binance futures",
+  "main": "api/funding-rates.js",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "vercel dev",
+    "start": "node api/funding-rates.js"
+  },
+  "keywords": [
+    "cryptocurrency",
+    "funding-rates",
+    "binance",
+    "mexc",
+    "ccxt",
+    "vercel"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ccxt": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
