@@ -235,15 +235,62 @@ async function handler(req, res) {
       fetchFundingRates('mexc', exchanges.mexc)
     ]);
 
-    // Combine results
-    const allRates = [...binanceRates, ...mexcRates];
+    // Create lookup maps for easier comparison
+    const binanceMap = {};
+    const mexcMap = {};
 
-    // Sort by funding rate (highest first)
-    allRates.sort((a, b) => {
-      const rateA = parseFloat(a.fundingRate) || 0;
-      const rateB = parseFloat(b.fundingRate) || 0;
-      return rateB - rateA;
+    binanceRates.forEach(item => {
+      binanceMap[item.symbol] = item;
     });
+
+    mexcRates.forEach(item => {
+      mexcMap[item.symbol] = item;
+    });
+
+    // Find common symbols and calculate differences
+    const comparisonTable = [];
+    const allSymbols = new Set([...Object.keys(binanceMap), ...Object.keys(mexcMap)]);
+
+    allSymbols.forEach(symbol => {
+      const binanceData = binanceMap[symbol];
+      const mexcData = mexcMap[symbol];
+
+      // Only include if symbol exists on both exchanges and has funding rates
+      if (binanceData && mexcData && binanceData.fundingRate !== null) {
+        const binanceRate = parseFloat(binanceData.fundingRate) || 0;
+        const mexcRate = parseFloat(mexcData.fundingRate) || 0;
+        const difference = mexcRate - binanceRate; // MEXC - Binance
+
+        comparisonTable.push({
+          symbol: symbol,
+          binance: {
+            fundingRate: binanceData.fundingRate,
+            fundingIntervalHours: binanceData.fundingIntervalHours,
+            nextFundingDatetime: binanceData.nextFundingDatetime,
+            markPrice: binanceData.markPrice
+          },
+          mexc: {
+            fundingRate: mexcData.fundingRate,
+            fundingIntervalHours: mexcData.fundingIntervalHours,
+            nextFundingDatetime: mexcData.nextFundingDatetime,
+            markPrice: mexcData.markPrice
+          },
+          fundingRateDifference: difference.toFixed(6),
+          absoluteDifference: Math.abs(difference).toFixed(6),
+          favorableExchange: difference > 0 ? 'BINANCE' : difference < 0 ? 'MEXC' : 'EQUAL',
+          differenceCategory: Math.abs(difference) >= 0.1 ? 'HIGH' :
+                             Math.abs(difference) >= 0.05 ? 'MEDIUM' : 'LOW'
+        });
+      }
+    });
+
+    // Sort by funding rate difference (ascending: most negative differences first)
+    comparisonTable.sort((a, b) => {
+      return parseFloat(a.fundingRateDifference) - parseFloat(b.fundingRateDifference);
+    });
+
+    // Combine all rates for general statistics
+    const allRates = [...binanceRates, ...mexcRates];
 
     const endTime = Date.now();
     const duration = endTime - startTime;
@@ -255,23 +302,31 @@ async function handler(req, res) {
       intervalStats[interval] = (intervalStats[interval] || 0) + 1;
     });
 
+    // Enhanced response with table format
     const response = {
       success: true,
       timestamp: new Date().toISOString(),
       fetchDuration: `${duration}ms`,
-      totalContracts: allRates.length,
-      exchanges: {
-        binance: binanceRates.length,
-        mexc: mexcRates.length
-      },
-      fundingIntervals: intervalStats,
-      data: allRates,
       summary: {
-        highestFundingRate: allRates[0] || null,
-        lowestFundingRate: allRates[allRates.length - 1] || null,
-        averageFundingRate: allRates.length > 0
-          ? (allRates.reduce((sum, item) => sum + (parseFloat(item.fundingRate) || 0), 0) / allRates.length).toFixed(6)
-          : 0
+        totalUniqueCoins: allSymbols.size,
+        commonCoins: comparisonTable.length,
+        exchanges: {
+          binance: binanceRates.length,
+          mexc: mexcRates.length
+        },
+        fundingIntervals: intervalStats,
+        differenceStats: {
+          highDifferences: comparisonTable.filter(item => item.differenceCategory === 'HIGH').length,
+          mediumDifferences: comparisonTable.filter(item => item.differenceCategory === 'MEDIUM').length,
+          lowDifferences: comparisonTable.filter(item => item.differenceCategory === 'LOW').length,
+          favorsBinance: comparisonTable.filter(item => item.favorableExchange === 'BINANCE').length,
+          favorsMexc: comparisonTable.filter(item => item.favorableExchange === 'MEXC').length
+        }
+      },
+      tableData: comparisonTable,
+      rawData: {
+        binance: binanceRates,
+        mexc: mexcRates
       }
     };
 
