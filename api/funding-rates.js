@@ -220,30 +220,33 @@ async function fetchBinanceFundingRates(exchange) {
         // Extract base symbol
         const baseSymbol = symbol.split(':')[0].replace('/USDT', '');
 
+
         // Calculate actual funding interval with improved logic prioritizing API data
         let fundingIntervalHours = null; // Start with null to force calculation
 
-        // Method 1: Try to calculate from the timestamp difference first
-        if (data.fundingTimestamp && data.nextFundingTime) {
-          const interval = calculateFundingInterval(data.fundingTimestamp, data.nextFundingTime);
-          if (interval && interval > 0 && interval <= 24) {
-            fundingIntervalHours = interval;
-            console.log(`${baseSymbol}: Detected ${interval}H from timestamps`);
+        // Method 1: Calculate from next funding time pattern
+        if (data.fundingTimestamp) {
+          const nextFundingTime = data.fundingTimestamp;
+          const nextFundingDate = new Date(nextFundingTime);
+          const nextHour = nextFundingDate.getUTCHours();
+
+          // Binance funding times are typically at 00:00, 08:00, 16:00 (8H) or 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 (4H) or hourly
+          if (nextHour % 8 === 0) {
+            // If next funding is at 00, 08, or 16, it's 8H interval
+            fundingIntervalHours = 8;
+          } else if (nextHour % 4 === 0) {
+            // If next funding is at 00, 04, 08, 12, 16, 20, it's 4H interval
+            fundingIntervalHours = 4;
+          } else if (nextHour % 2 === 0) {
+            // If next funding is at even hours, it's 2H interval
+            fundingIntervalHours = 2;
+          } else {
+            // If next funding is at any hour, it's 1H interval
+            fundingIntervalHours = 1;
           }
         }
 
-        // Method 2: Try with datetime strings if timestamps failed
-        if (!fundingIntervalHours && data.fundingDatetime && data.nextFundingDatetime) {
-          const currentTime = new Date(data.fundingDatetime).getTime();
-          const nextTime = new Date(data.nextFundingDatetime).getTime();
-          const interval = calculateFundingInterval(currentTime, nextTime);
-          if (interval && interval > 0 && interval <= 24) {
-            fundingIntervalHours = interval;
-            console.log(`${baseSymbol}: Detected ${interval}H from datetime strings`);
-          }
-        }
-
-        // Method 3: Try funding history for symbols that don't have interval yet (with limit)
+        // Method 2: Try funding history for symbols that don't have interval yet (with limit)
         if (!fundingIntervalHours && historyCallsCount < maxHistoryCalls) {
           try {
             const historyInterval = await getFundingIntervalForSymbol(exchange, symbol);
@@ -251,7 +254,6 @@ async function fetchBinanceFundingRates(exchange) {
 
             if (historyInterval && historyInterval > 0 && historyInterval <= 24) {
               fundingIntervalHours = historyInterval;
-              console.log(`${baseSymbol}: Detected ${historyInterval}H from funding history (call ${historyCallsCount}/${maxHistoryCalls})`);
             }
           } catch (historyError) {
             historyCallsCount++; // Still count failed calls
@@ -262,7 +264,7 @@ async function fetchBinanceFundingRates(exchange) {
           await new Promise(resolve => setTimeout(resolve, 30));
         }
 
-        // Method 4: Final fallback - use 8H as default (most conservative)
+        // Method 3: Final fallback - use 8H as default (most conservative)
         if (!fundingIntervalHours) {
           fundingIntervalHours = 8; // Default to 8H if we can't detect
           console.log(`${baseSymbol}: Using fallback 8H interval`);
